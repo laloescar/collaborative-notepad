@@ -1,0 +1,78 @@
+Product Requirements Document: Collaborative Desktop Text Editor
+
+1. Project Overview:
+
+	Product Name: Collaborative Desktop Text Editor
+	Project Type: Collaborative Desktop Text Editor. Desktop Application (Windows-first focus).
+	Core Functionality: A real-time, multi-user collaborative text editor (similar to Windows Notepad or macOS TextEdit) with concurrent editing capabilities.
+
+2. Tech Stack & Architecture:
+
+	Architecture Concept: Client-Server model. A local desktop client connected to a backend service to facilitate real-time file synchronization, data persistence, and user access management.
+	Frontend (Client): Python using the tkinter module for the GUI.
+	Backend (Server): Python using FastAPI.
+	Database: SQLite (for user data, file metadata, and permission records).
+	Communication Protocols:
+		HTTP/REST: Used for standard operations (Authentication, File Management, Invites) via JSON payloads (e.g., standard POST/GET requests on Port 8000).
+		WebSockets or Server-Sent Events (SSE): Required for concurrent, real-time text synchronization between multiple active clients.
+	Version Control: Git & GitHub.
+
+3. Standard User Flow:
+
+	Launch: User opens the desktop app and lands on the Authentication Interface.
+	Authentication: User logs in to an existing account or creates a new one.
+	Dashboard: User is presented with options to "Create a New File" or "Open an Existing File."
+	Workspace: User enters the main editing canvas.
+	Collaboration: User edits text in real-time. User can optionally invite other users via email or manage existing access permissions.
+	Export/Import: User can save/download the current document state locally as a .txt file, or open local .txt files.
+	Exit: User closes the application.
+
+4. Core Features & Functional Requirements:
+
+	A. User Authentication & Security:
+		Registration: Users create an account using Name, Email, and Password.
+		Login: Existing users authenticate via Email and Password via HTTP POST request.
+		Error Handling: If credentials fail validation against SQLite records, the UI must prompt the user to review their information and try again.
+
+	B. Core Editor (Workspace):
+		Canvas: A main text area for writing and deleting text.
+		Text Formatting features:
+			Write text.
+			Delete text.
+			Apply Bold text styling.
+			Apply Italic text styling.
+			Insert line breaks.
+		Local File Operations: Users may save the current remote workspace to a local .txt file, and load local .txt files into the workspace.
+
+	C. Collaboration & Real-Time Synchronization:
+		Concurrency: Text editing must be collaborative, simultaneous, and reflected in real-time across all active desktop clients viewing the same document.
+		Conflict Resolution: Backend architecture must handle concurrent typing safely.
+
+	D. Access Management (Sharing):
+		Invite: Any user with current access to a file can invite new users to collaborate by querying the backend with the invitee's email address.
+		Revoke: Strict Permission. Only the file "Owner" (the original creator mapped in SQLite) possesses the permission to remove file access from other users.
+
+5. Strict Validation Rules (Data Integrity):
+
+	When implementing the registration logic, the following constraints must be strictly enforced on the frontend and validated on the FastAPI backend (Regex implementation is highly recommended):
+		Rule Set 1: Name Validation:
+			Allowed: Alphabetical letters only.
+			Disallowed: Numbers and all special characters.
+
+		Rule Set 2: Email Validation:
+			Required: Must contain exactly one @ symbol.
+			Disallowed:
+				Spaces.
+				Backslashes (\).
+				Accented characters and non-Latin characters.
+				Consecutive dots (e.g., ..).
+				Leading or trailing dots (e.g., .email@ or @domain.com.).
+
+		Rule Set 3: Password Validation:
+			Required:
+				Minimum length: 8 characters.
+				At least one uppercase letter.
+				At least one lowercase letter.
+				At least one number.
+				At least one special character.
+				UI Constraint (Confirmation): The registration UI must include a "Confirm Password" field. Both password entries must match exactly in the client before submission to the API.

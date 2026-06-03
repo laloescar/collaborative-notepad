@@ -1,0 +1,22 @@
+UI/UX DESIGN GUIDELINES
+Project: Collaborative Desktop Text Editor
+
+1. Architectural Directives
+- GUI Library: You MUST use tkinter.
+- The app window must have a 4:3 horizontal format.
+
+2. Design Tokens (Color Palette)
+- Use the following strict hexadecimal codes for all widget color configurations. NEVER use standard string colors like "black" or "blue".
+	- APP_BACKGROUND = "#F8F9FA" (Off-white: Use for root windows and main background frames).
+	- CANVAS_BACKGROUND = "#FFFFFF" (Pure white: Use strictly for the text editor typing area).
+	- PRIMARY_ACCENT = "#3B82F6" (Vibrant blue: Use for primary call-to-action buttons like Login, Save, Invite).
+	- HOVER_ACCENT = "#2563EB" (Darker blue: Use for the hover state of primary buttons).
+	- TEXT_PRIMARY = "#1F2937" (Dark slate grey: Use for all UI labels, menus, and typed text. DO NOT use pure #000000).
+
+3. Typography Rules
+- Map the following font configurations to their respective UI areas:
+	- Application UI: ("Rubik") or ("Rubik", "bold").
+	- Text Editor Canvas: (“Open Sans”, 12). Apply this EXCLUSIVELY to the editor canvas where the user writes text.
+
+4. Component Styling Rules
+- Spacing: Apply a minimum padding x and y to prevent UI clutter.

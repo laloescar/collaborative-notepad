@@ -1,0 +1,52 @@
+Collaborative Text Editor Login Interface Description
+
+This document provides a structured, technical blueprint of the login screen interface.
+
+1. High-Level Layout & Structure
+- Layout Type: Centered, single-column card layout.
+- Canvas Background: Very soft, light-gray gradient or off-white background (follow design guidelines).
+- Container Bounds: Centered vertical stack with a max-width of max-w-md (~450px) to max-w-lg (~512px).
+- Spacing & Padding: Consistent vertical gaps (space-y-6) with generous padding to create an open, clean look.
+
+2. Global Design Tokens (Theme)
+- Colors: follow design guidelines.
+- Font Family: follow design guidelines.
+
+3. Header Block
+- Main Welcome Title:
+	- Text: Qué vas a anotar hoy?!
+	- Styles: Semibold/Bold, size text-4xl, center-aligned (follow design guidelines).
+- Brand Logo: Currently non existing.
+- Subtitle Action:
+	- Text: Inicia sesión
+	Styles: Semibold, size text-2xl, center-aligned, with a margin top of mt-4.
+
+4. Credentials Form
+- Layout: Vertical stack of input fields with a vertical gap of space-y-4.
+	- Field 1: Email Input:
+		- Label: Ingresa tu correo electrónico (Bold, small, dark slate text, aligned left).
+		- Placeholder: ej. usuario@correo.com (Italicized)
+		- Input Style: White background, height h-12, full-width.
+	- Field 2: Password Input:
+		- Label: Ingresa tu contraseña.
+		- Input Style: White background, height h-12, full-width.
+		- Placeholder: ej. Contraseña1!.
+		- Right Button (Password fields only): An interactive button to toggle password visibility.
+	- Forgot Password Link:
+		- Text: ¿Olvidaste tu contraseña?
+		- Styles: Centered text immediately below the password field, royal blue color (follow design guidelines), hover underline.
+	- Primary Button (Submit):
+		- Text: Iniciar Sesión
+		- Hover state should subtly darken (follow design guidelines).
+
+5. Bottom Registration Panel
+- Container:
+	- A full-width callout card situated at the bottom of the form layout.
+	- Background: Very light grayish-blue tint (follow design guidelines).
+	- Border: Thin light-gray outline (border border-slate-100).
+	- Padding: Balanced padding (p-6).
+	- Inside Contents (Stacked vertically):
+		- Text Prompt: ¿No cuentas con cuenta propia? (Centered, small, slate-600 text, regular/medium weight).
+		- Redirect Button:
+			- Text: Regístrate aquí
+			- Styles: White background, royal blue border outline (follow design guidelines), bold blue text, height h-10, width w-48 or scaled to center nicely within the card.
