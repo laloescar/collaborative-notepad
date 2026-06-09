@@ -1,28 +1,7 @@
-# ==============================================================================
-#  CoopDoc — Collaborative Desktop Text Editor
-#  Unified prototype: FastAPI backend + tkinter frontend in a SINGLE file.
-# ------------------------------------------------------------------------------
-#  This file merges three previously separate modules:
-#     1. registro_ui.py  (Registration UI)
-#     2. login_ui.py      (Login UI)
-#     3. backend.py       (FastAPI + SQLite backend)
-#
-#  The PRD specifies a client-server architecture (tkinter client <-> FastAPI
-#  server <-> SQLite). To honour that while still shipping ONE runnable file,
-#  the FastAPI server is launched in a background daemon thread and the tkinter
-#  client talks to it over HTTP (localhost:8000) using the `requests` library.
-#  This keeps the student's real backend intact and demonstrates the full stack:
-#  the UI writes new users to the DB and reads existing users back on login.
-#
-#  Run:   python coopdoc_app.py
-#  Deps:  pip install fastapi uvicorn requests pydantic
-# ==============================================================================
-
 import math
 import re
 import time
 import sqlite3
-import hashlib
 import threading
 from datetime import datetime
 from typing import Dict, List, Optional
@@ -33,78 +12,68 @@ from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, stat
 from pydantic import BaseModel, field_validator, model_validator
 
 import tkinter as tk
-from tkinter import messagebox
+from tkinter import messagebox, filedialog, simpledialog
 import tkinter.font as tkfont
 
 
-# ==============================================================================
-#  DESIGN TOKENS  (strict palette from the Design Guidelines)
-# ==============================================================================
-APP_BACKGROUND   = "#F8F9FA"   # Off-white: root window / main background
-CANVAS_BACKGROUND = "#FFFFFF"  # Pure white: input fields (and future editor canvas)
-PRIMARY_ACCENT   = "#3B82F6"   # Vibrant blue: primary CTA buttons
-HOVER_ACCENT     = "#2563EB"   # Darker blue: hover state of primary buttons
-TEXT_PRIMARY     = "#1F2937"   # Dark slate grey: labels, menus, typed text
+# Tokens de diseno: paleta estricta de las Guias de Diseno
+APP_BACKGROUND = "#F8F9FA"      # Blanco hueso: ventana raiz y fondos principales
+CANVAS_BACKGROUND = "#FFFFFF"   # Blanco puro: campos de entrada y lienzo del editor
+PRIMARY_ACCENT = "#3B82F6"      # Azul vibrante: botones de accion principal
+HOVER_ACCENT = "#2563EB"        # Azul oscuro: estado hover de botones principales
+TEXT_PRIMARY = "#1F2937"        # Gris pizarra: etiquetas, menus y texto escrito
 
-# Supporting tints derived to reproduce the reference images while staying
-# inside the spirit of the palette (used for promo cards, borders, placeholders).
-PROMO_BG     = "#EFF3FE"   # Light blue promotional / callout panel
-INPUT_BORDER = "#E2E8F0"   # Thin light-gray input/card outline (slate-200)
-SLATE_TEXT   = "#64748B"   # Secondary slate body text (slate-500/600)
-PLACEHOLDER  = "#9CA3AF"   # Italic gray placeholder text
-DIVIDER      = "#E2E8F0"   # Hairline dividers
-OUTLINE_HOVER = "#EFF4FE"  # Soft hover wash for outline buttons
+# Tintes de apoyo derivados de la paleta para tarjetas, bordes y textos secundarios
+PROMO_BG = "#EFF3FE"
+INPUT_BORDER = "#E2E8F0"
+SLATE_TEXT = "#64748B"
+PLACEHOLDER = "#9CA3AF"
+DIVIDER = "#E2E8F0"
+OUTLINE_HOVER = "#EFF4FE"
 
-# Editor canvas font is defined here for completeness (Design Guidelines), but
-# the workspace itself is the next milestone and is not built in this prototype.
+# Fuente exclusiva del lienzo del editor (Guias de Diseno)
 EDITOR_FONT = ("Open Sans", 12)
 
 API_BASE = "http://127.0.0.1:8000"
 
-# Fonts are real Font objects created once a Tk root exists (see init_fonts()).
+# Las fuentes son objetos reales que se crean cuando ya existe una raiz Tk
 F_TITLE = F_H2 = F_FORM_TITLE = F_LABEL = F_INPUT = F_INPUT_ITALIC = None
-F_BTN = F_SMALL = F_LINK = F_PROMO_TITLE = F_PROMO_DESC = None
+F_BTN = F_BTN_ITALIC = F_SMALL = F_LINK = F_PROMO_TITLE = F_PROMO_DESC = None
 
 
-# ==============================================================================
-# ==============================================================================
-#  SECTION A — BACKEND  (FastAPI + SQLite + Pydantic + WebSockets)
-#  Adapted from backend.py. Validation rules from the PRD are enforced here as
-#  the single source of truth; the frontend mirrors them for instant feedback.
-# ==============================================================================
-# ==============================================================================
-
+# Backend: FastAPI + SQLite + Pydantic + WebSockets.
+# Las reglas de validacion del PRD se aplican aqui. El frontend las replica para dar retroalimentacion inmediata.
 app = FastAPI(title="Collaborative Text Editor API")
 
 DB_FILE = "editor_backend.db"
 
 
 def get_db_connection():
-    # check_same_thread=False: FastAPI serves requests across threads.
+    # check_same_thread=False: FastAPI atiende peticiones en varios hilos
     conn = sqlite3.connect(DB_FILE, check_same_thread=False)
     conn.row_factory = sqlite3.Row
     return conn
 
 
 def initialize_database():
-    """Create tables if missing and migrate the users table if needed."""
+    # Si existe una base de datos de una version anterior con contrasena cifrada,
+    # conviene borrar editor_backend.db para que se cree el esquema actual.
     conn = get_db_connection()
     cursor = conn.cursor()
 
-    # NOTE: date_of_birth was added to align the backend with the registration
-    # UI (the PRD lists Name/Email/Password, but the UI + reference images also
-    # collect a birth date). Keeping schema and UI consistent is best practice.
+    # date_of_birth alinea el backend con la interfaz de registro (el PRD pide
+    # Nombre/Correo/Contrasena, pero la UI tambien recoge la fecha de nacimiento)
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS users (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             name TEXT NOT NULL,
             date_of_birth TEXT,
             email TEXT UNIQUE NOT NULL,
-            password_hash TEXT NOT NULL
+            password TEXT NOT NULL
         )
     ''')
 
-    # Lightweight migration for older DB files that predate date_of_birth.
+    # Migracion ligera para archivos antiguos que no tenian date_of_birth
     existing = [row[1] for row in cursor.execute("PRAGMA table_info(users)").fetchall()]
     if "date_of_birth" not in existing:
         cursor.execute("ALTER TABLE users ADD COLUMN date_of_birth TEXT")
@@ -124,7 +93,7 @@ def initialize_database():
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             document_id INTEGER NOT NULL,
             user_id INTEGER NOT NULL,
-            role TEXT NOT NULL,                 -- 'owner' or 'editor'
+            role TEXT NOT NULL,
             FOREIGN KEY(document_id) REFERENCES documents(id),
             FOREIGN KEY(user_id) REFERENCES users(id),
             UNIQUE(document_id, user_id)
@@ -138,13 +107,8 @@ def initialize_database():
 initialize_database()
 
 
-# ------------------------------------------------------------------------------
-#  Pydantic models & strict validation (PRD Section 5)
-# ------------------------------------------------------------------------------
-# Accept any Unicode letter (incl. accented Spanish letters and ñ) plus single
-# spaces between words. Numbers and special characters are rejected. The original
-# `^[A-Za-z]+$` rule was too strict — it rejected the spec's own example name
-# "César Ríos Oliváres" — so it is relaxed here to letters + spaces.
+# Modelos Pydantic y validacion estricta (PRD Seccion 5).
+# Se aceptan letras Unicode (incluidas acentuadas y la n) mas espacios simples entre palabras.
 NAME_RE = re.compile(r"^[^\W\d_]+(?: [^\W\d_]+)*$", re.UNICODE)
 EMAIL_RE = re.compile(r"^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$")
 DATE_RE = re.compile(r"^\d{2}/\d{2}/\d{4}$")
@@ -162,7 +126,7 @@ class UserRegister(BaseModel):
     def validate_name(cls, value: str):
         value = value.strip()
         if not NAME_RE.match(value):
-            raise ValueError("Name must contain only letters and spaces.")
+            raise ValueError("El nombre solo puede contener letras y espacios.")
         return value
 
     @field_validator('date_of_birth')
@@ -170,47 +134,47 @@ class UserRegister(BaseModel):
     def validate_dob(cls, value: str):
         value = value.strip()
         if not DATE_RE.match(value):
-            raise ValueError("Date of birth must use the format dd/mm/aaaa.")
+            raise ValueError("La fecha debe tener el formato dd/mm/aaaa.")
         try:
             datetime.strptime(value, "%d/%m/%Y")
         except ValueError:
-            raise ValueError("Date of birth is not a valid calendar date.")
+            raise ValueError("La fecha de nacimiento no es una fecha valida.")
         return value
 
     @field_validator('email')
     @classmethod
     def validate_email(cls, value: str):
         if value.count('@') != 1:
-            raise ValueError("Email must contain exactly one @ symbol.")
+            raise ValueError("El correo debe contener exactamente un simbolo @.")
         if re.search(r'[\s\\]', value):
-            raise ValueError("Email cannot contain spaces or backslashes.")
+            raise ValueError("El correo no puede contener espacios ni barras invertidas.")
         if '..' in value:
-            raise ValueError("Email cannot contain consecutive dots.")
+            raise ValueError("El correo no puede contener puntos consecutivos.")
         if value.startswith('.') or value.endswith('.') or '@.' in value or '.@' in value:
-            raise ValueError("Email cannot have leading/trailing dots or dots next to @.")
+            raise ValueError("El correo no puede tener puntos al inicio/final ni junto a la @.")
         if not EMAIL_RE.match(value):
-            raise ValueError("Email contains invalid characters or structure.")
+            raise ValueError("El correo tiene un formato invalido.")
         return value
 
     @field_validator('password')
     @classmethod
     def validate_password(cls, value: str):
         if len(value) < 8:
-            raise ValueError("Password must be at least 8 characters long.")
+            raise ValueError("La contrasena debe tener al menos 8 caracteres.")
         if not re.search(r"[A-Z]", value):
-            raise ValueError("Password must contain at least one uppercase letter.")
+            raise ValueError("La contrasena debe incluir al menos una mayuscula.")
         if not re.search(r"[a-z]", value):
-            raise ValueError("Password must contain at least one lowercase letter.")
+            raise ValueError("La contrasena debe incluir al menos una minuscula.")
         if not re.search(r"\d", value):
-            raise ValueError("Password must contain at least one number.")
+            raise ValueError("La contrasena debe incluir al menos un numero.")
         if not re.search(r"[^A-Za-z0-9]", value):
-            raise ValueError("Password must contain at least one special character.")
+            raise ValueError("La contrasena debe incluir al menos un caracter especial.")
         return value
 
     @model_validator(mode='after')
     def check_passwords_match(self):
         if self.password != self.confirm_password:
-            raise ValueError("Passwords do not match.")
+            raise ValueError("Las contrasenas no coinciden.")
         return self
 
 
@@ -236,15 +200,6 @@ class RevokeAccess(BaseModel):
     target_user_id: int
 
 
-# ------------------------------------------------------------------------------
-#  Utilities
-# ------------------------------------------------------------------------------
-def hash_password(password: str) -> str:
-    # SHA-256 keeps things dependency-free for this learning prototype.
-    # (Production should use bcrypt/argon2 with a per-user salt.)
-    return hashlib.sha256(password.encode('utf-8')).hexdigest()
-
-
 def check_permission(doc_id: int, user_id: int) -> Optional[str]:
     conn = get_db_connection()
     cursor = conn.cursor()
@@ -255,12 +210,10 @@ def check_permission(doc_id: int, user_id: int) -> Optional[str]:
     return row['role'] if row else None
 
 
-# ------------------------------------------------------------------------------
-#  HTTP endpoints
-# ------------------------------------------------------------------------------
+# Endpoints HTTP
 @app.get("/")
 def health():
-    """Health probe used by the client to wait for server readiness."""
+    # Sonda de salud que el cliente usa para esperar a que el servidor este listo
     return {"status": "ok"}
 
 
@@ -272,37 +225,35 @@ def register_user(user: UserRegister):
     cursor.execute("SELECT id FROM users WHERE email=?", (user.email,))
     if cursor.fetchone():
         conn.close()
-        raise HTTPException(status_code=400, detail="Email already registered.")
+        raise HTTPException(status_code=400, detail="El correo ya esta registrado.")
 
-    hashed_pw = hash_password(user.password)
     try:
         cursor.execute(
-            "INSERT INTO users (name, date_of_birth, email, password_hash) VALUES (?, ?, ?, ?)",
-            (user.name, user.date_of_birth, user.email, hashed_pw)
+            "INSERT INTO users (name, date_of_birth, email, password) VALUES (?, ?, ?, ?)",
+            (user.name, user.date_of_birth, user.email, user.password)
         )
         conn.commit()
     except sqlite3.Error:
         conn.rollback()
         conn.close()
-        raise HTTPException(status_code=500, detail="Database error occurred.")
+        raise HTTPException(status_code=500, detail="Ocurrio un error en la base de datos.")
     conn.close()
-    return {"message": "User registered successfully."}
+    return {"message": "Usuario registrado correctamente."}
 
 
 @app.post("/login")
 def login_user(credentials: UserLogin):
     conn = get_db_connection()
     cursor = conn.cursor()
-    hashed_pw = hash_password(credentials.password)
     cursor.execute(
-        "SELECT id, name FROM users WHERE email=? AND password_hash=?",
-        (credentials.email, hashed_pw)
+        "SELECT id, name FROM users WHERE email=? AND password=?",
+        (credentials.email, credentials.password)
     )
     user = cursor.fetchone()
     conn.close()
     if not user:
-        raise HTTPException(status_code=401, detail="Invalid email or password.")
-    return {"message": "Login successful", "user_id": user['id'], "name": user['name']}
+        raise HTTPException(status_code=401, detail="Correo o contrasena incorrectos.")
+    return {"message": "Inicio de sesion exitoso", "user_id": user['id'], "name": user['name']}
 
 
 @app.post("/documents")
@@ -320,34 +271,34 @@ def create_document(doc: DocumentCreate):
     )
     conn.commit()
     conn.close()
-    return {"message": "Document created", "document_id": doc_id}
+    return {"message": "Documento creado", "document_id": doc_id}
 
 
 @app.get("/documents/{doc_id}")
 def get_document(doc_id: int, requester_id: int):
     if not check_permission(doc_id, requester_id):
-        raise HTTPException(status_code=403, detail="Access denied.")
+        raise HTTPException(status_code=403, detail="Acceso denegado.")
     conn = get_db_connection()
     cursor = conn.cursor()
     cursor.execute("SELECT title, content FROM documents WHERE id=?", (doc_id,))
     doc = cursor.fetchone()
     conn.close()
     if not doc:
-        raise HTTPException(status_code=404, detail="Document not found.")
+        raise HTTPException(status_code=404, detail="Documento no encontrado.")
     return {"title": doc['title'], "content": doc['content']}
 
 
 @app.post("/invite")
 def invite_user(invite: InviteUser):
     if not check_permission(invite.document_id, invite.requester_id):
-        raise HTTPException(status_code=403, detail="You do not have access to this document.")
+        raise HTTPException(status_code=403, detail="No tienes acceso a este documento.")
     conn = get_db_connection()
     cursor = conn.cursor()
     cursor.execute("SELECT id FROM users WHERE email=?", (invite.invitee_email,))
     invitee = cursor.fetchone()
     if not invitee:
         conn.close()
-        raise HTTPException(status_code=404, detail="Invitee email not found.")
+        raise HTTPException(status_code=404, detail="El correo invitado no existe.")
     invitee_id = invitee['id']
     try:
         cursor.execute(
@@ -356,30 +307,29 @@ def invite_user(invite: InviteUser):
         )
         conn.commit()
     except sqlite3.IntegrityError:
+        # El usuario ya tenia acceso: se ignora el duplicado
         pass
     conn.close()
-    return {"message": f"User {invite.invitee_email} invited successfully."}
+    return {"message": f"Usuario {invite.invitee_email} invitado correctamente."}
 
 
 @app.delete("/revoke")
 def revoke_access(revoke: RevokeAccess):
     role = check_permission(revoke.document_id, revoke.requester_id)
     if role != 'owner':
-        raise HTTPException(status_code=403, detail="Only the document owner can revoke access.")
+        raise HTTPException(status_code=403, detail="Solo el propietario puede revocar accesos.")
     if revoke.requester_id == revoke.target_user_id:
-        raise HTTPException(status_code=400, detail="Owner cannot revoke their own access.")
+        raise HTTPException(status_code=400, detail="El propietario no puede revocar su propio acceso.")
     conn = get_db_connection()
     cursor = conn.cursor()
     cursor.execute("DELETE FROM permissions WHERE document_id=? AND user_id=?",
                    (revoke.document_id, revoke.target_user_id))
     conn.commit()
     conn.close()
-    return {"message": "User access revoked."}
+    return {"message": "Acceso de usuario revocado."}
 
 
-# ------------------------------------------------------------------------------
-#  WebSocket: real-time collaboration (wired for the future editor milestone)
-# ------------------------------------------------------------------------------
+# WebSocket: sincronizacion en tiempo real entre clientes activos del mismo documento
 class ConnectionManager:
     def __init__(self):
         self.active_connections: Dict[int, List[WebSocket]] = {}
@@ -423,7 +373,7 @@ async def websocket_endpoint(websocket: WebSocket, doc_id: int, user_id: int):
 
 
 def start_backend():
-    """Run uvicorn in a daemon thread (signal handlers disabled off main thread)."""
+    # Ejecuta uvicorn en un hilo demonio (sin manejadores de senales fuera del hilo principal)
     config = uvicorn.Config(app, host="127.0.0.1", port=8000, log_level="warning")
     server = uvicorn.Server(config)
     server.install_signal_handlers = lambda: None
@@ -444,14 +394,10 @@ def wait_until_ready(timeout=15.0):
     return False
 
 
-# ==============================================================================
-# ==============================================================================
-#  SECTION B — CLIENT-SIDE VALIDATION (Spanish messages, mirrors the backend)
-#  PRD requires rules to be enforced on the frontend AND validated on the API.
-# ==============================================================================
-# ==============================================================================
+# Validacion del lado del cliente (mensajes en espanol que reflejan el backend).
+# El PRD exige aplicar las reglas en el frontend y validarlas en la API.
 def validate_registration(name, dob, email, password, confirm):
-    """Return None if valid, otherwise a Spanish error message for the user."""
+    # Devuelve None si es valido; en caso contrario un mensaje para el usuario
     if not all([name, dob, email, password, confirm]):
         return "Completa todos los campos."
 
@@ -463,10 +409,10 @@ def validate_registration(name, dob, email, password, confirm):
     try:
         datetime.strptime(dob, "%d/%m/%Y")
     except ValueError:
-        return "La fecha de nacimiento no es una fecha válida."
+        return "La fecha de nacimiento no es una fecha valida."
 
     if email.count("@") != 1:
-        return "El correo debe contener exactamente un símbolo @."
+        return "El correo debe contener exactamente un simbolo @."
     if re.search(r"[\s\\]", email):
         return "El correo no puede contener espacios ni barras invertidas."
     if ".." in email:
@@ -474,68 +420,63 @@ def validate_registration(name, dob, email, password, confirm):
     if email.startswith(".") or email.endswith(".") or "@." in email or ".@" in email:
         return "El correo no puede tener puntos al inicio/final ni junto a la @."
     if not EMAIL_RE.match(email):
-        return "El correo tiene un formato inválido."
+        return "El correo tiene un formato invalido."
 
     if len(password) < 8:
-        return "La contraseña debe tener al menos 8 caracteres."
+        return "La contrasena debe tener al menos 8 caracteres."
     if not re.search(r"[A-Z]", password):
-        return "La contraseña debe incluir al menos una mayúscula."
+        return "La contrasena debe incluir al menos una mayuscula."
     if not re.search(r"[a-z]", password):
-        return "La contraseña debe incluir al menos una minúscula."
+        return "La contrasena debe incluir al menos una minuscula."
     if not re.search(r"\d", password):
-        return "La contraseña debe incluir al menos un número."
+        return "La contrasena debe incluir al menos un numero."
     if not re.search(r"[^A-Za-z0-9]", password):
-        return "La contraseña debe incluir al menos un carácter especial."
+        return "La contrasena debe incluir al menos un caracter especial."
 
     if password != confirm:
-        return "Las contraseñas no coinciden."
+        return "Las contrasenas no coinciden."
 
     return None
 
 
-# ==============================================================================
-# ==============================================================================
-#  SECTION C — FRONTEND (tkinter)
-# ==============================================================================
-# ==============================================================================
+# Frontend (tkinter)
 def resolve_font_family(preferred, fallbacks):
-    """Use 'Rubik' if installed; otherwise fall back to a clean system font."""
+    # Usa la fuente solicitada si esta instalada; si no, recurre a una del sistema
     available = {f.lower() for f in tkfont.families()}
     for fam in [preferred] + fallbacks:
         if fam.lower() in available:
             return fam
-    return preferred  # tkinter silently substitutes if unavailable
+    return preferred
 
 
 def init_fonts():
-    """Create the named fonts once a Tk root exists (Design Guidelines: Rubik)."""
+    # Crea las fuentes nombradas una vez que existe la raiz Tk (Guias: Rubik para la UI)
     global F_TITLE, F_H2, F_FORM_TITLE, F_LABEL, F_INPUT, F_INPUT_ITALIC
-    global F_BTN, F_SMALL, F_LINK, F_PROMO_TITLE, F_PROMO_DESC
+    global F_BTN, F_BTN_ITALIC, F_SMALL, F_LINK, F_PROMO_TITLE, F_PROMO_DESC
     fam = resolve_font_family("Rubik", ["Segoe UI", "Helvetica Neue", "Arial"])
-    F_TITLE       = tkfont.Font(family=fam, size=30, weight="bold")
-    F_H2          = tkfont.Font(family=fam, size=20, weight="bold")
-    F_FORM_TITLE  = tkfont.Font(family=fam, size=26, weight="bold")
-    F_LABEL       = tkfont.Font(family=fam, size=11, weight="bold")
-    F_INPUT       = tkfont.Font(family=fam, size=12)
+    F_TITLE = tkfont.Font(family=fam, size=30, weight="bold")
+    F_H2 = tkfont.Font(family=fam, size=20, weight="bold")
+    F_FORM_TITLE = tkfont.Font(family=fam, size=26, weight="bold")
+    F_LABEL = tkfont.Font(family=fam, size=11, weight="bold")
+    F_INPUT = tkfont.Font(family=fam, size=12)
     F_INPUT_ITALIC = tkfont.Font(family=fam, size=12, slant="italic")
-    F_BTN         = tkfont.Font(family=fam, size=13, weight="bold")
-    F_SMALL       = tkfont.Font(family=fam, size=10, weight="bold")
-    F_LINK        = tkfont.Font(family=fam, size=11, weight="bold")
+    F_BTN = tkfont.Font(family=fam, size=13, weight="bold")
+    F_BTN_ITALIC = tkfont.Font(family=fam, size=13, weight="bold", slant="italic")
+    F_SMALL = tkfont.Font(family=fam, size=10, weight="bold")
+    F_LINK = tkfont.Font(family=fam, size=11, weight="bold")
     F_PROMO_TITLE = tkfont.Font(family=fam, size=22, weight="bold")
-    F_PROMO_DESC  = tkfont.Font(family=fam, size=12)
+    F_PROMO_DESC = tkfont.Font(family=fam, size=12)
 
 
-# ------------------------------------------------------------------------------
-#  Reusable widgets
-# ------------------------------------------------------------------------------
+# Widgets reutilizables
 class PlaceholderEntry(tk.Entry):
-    """Entry with italic gray placeholder text and password masking support."""
+    # Entry con texto de marcador en cursiva gris y soporte de enmascarado de contrasena
 
     def __init__(self, master, placeholder, is_password=False, **kw):
         super().__init__(master, **kw)
         self.placeholder = placeholder
         self.is_password = is_password
-        self.mask = is_password          # True -> hide characters with '*'
+        self.mask = is_password
         self.showing_placeholder = False
         self.bind("<FocusIn>", self._on_focus_in)
         self.bind("<FocusOut>", self._on_focus_out)
@@ -562,7 +503,7 @@ class PlaceholderEntry(tk.Entry):
             self._show_placeholder()
 
     def value(self):
-        """Real user value ('' if only the placeholder is showing)."""
+        # Valor real del usuario ('' si solo se muestra el marcador)
         return "" if self.showing_placeholder else self.get()
 
     def set_mask(self, mask: bool):
@@ -576,7 +517,7 @@ class PlaceholderEntry(tk.Entry):
 
 
 def make_field(parent, placeholder, is_password=False):
-    """A bordered white input box; returns (container, PlaceholderEntry, toggle)."""
+    # Caja de entrada blanca con borde; devuelve (contenedor, PlaceholderEntry, toggle)
     border = tk.Frame(parent, bg=INPUT_BORDER)
     inner = tk.Frame(border, bg=CANVAS_BACKGROUND)
     inner.pack(fill="both", expand=True, padx=1, pady=1)
@@ -594,10 +535,10 @@ def make_field(parent, placeholder, is_password=False):
                 return
             new_mask = not entry.mask
             entry.set_mask(new_mask)
-            toggle.config(text="Show" if new_mask else "Hide")
+            toggle.config(text="Mostrar" if new_mask else "Ocultar")
 
         toggle = tk.Button(
-            inner, text="Show", command=_toggle, relief="flat", bd=0,
+            inner, text="Mostrar", command=_toggle, relief="flat", bd=0,
             bg=CANVAS_BACKGROUND, fg=PRIMARY_ACCENT, activebackground=CANVAS_BACKGROUND,
             activeforeground=HOVER_ACCENT, font=F_SMALL, cursor="hand2",
         )
@@ -608,7 +549,7 @@ def make_field(parent, placeholder, is_password=False):
 
 
 def style_primary(btn):
-    """Solid blue CTA that darkens on hover."""
+    # Boton azul solido que se oscurece al pasar el cursor
     btn.config(bg=PRIMARY_ACCENT, fg=CANVAS_BACKGROUND, activebackground=HOVER_ACCENT,
                activeforeground=CANVAS_BACKGROUND, relief="flat", bd=0,
                cursor="hand2", font=F_BTN)
@@ -618,7 +559,7 @@ def style_primary(btn):
 
 
 def make_outline_button(parent, text, command):
-    """White button with a blue border and bold blue text (border via frame trick)."""
+    # Boton blanco con borde y texto azul (borde simulado con un frame)
     border = tk.Frame(parent, bg=PRIMARY_ACCENT)
     btn = tk.Button(border, text=text, command=command, bg=CANVAS_BACKGROUND,
                     fg=PRIMARY_ACCENT, activebackground=OUTLINE_HOVER,
@@ -629,7 +570,7 @@ def make_outline_button(parent, text, command):
 
 
 def draw_star_logo(parent, size=84, bg=CANVAS_BACKGROUND):
-    """A small blue star inside a circle, approximating the brand mark."""
+    # Estrella azul dentro de un circulo que aproxima la marca
     canvas = tk.Canvas(parent, width=size, height=size, bg=bg,
                        highlightthickness=0, bd=0)
     pad = 4
@@ -647,6 +588,7 @@ def draw_star_logo(parent, size=84, bg=CANVAS_BACKGROUND):
 
 
 def add_hover_underline(label):
+    # Subraya un enlace de texto al pasar el cursor
     base = label.cget("font")
     over = tkfont.Font(font=base)
     over.config(underline=True)
@@ -654,17 +596,19 @@ def add_hover_underline(label):
     label.bind("<Leave>", lambda e: label.config(font=base))
 
 
-# ------------------------------------------------------------------------------
-#  Application controller
-# ------------------------------------------------------------------------------
+# Controlador de la aplicacion
 class App(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title("CoopDoc — Editor de Texto Colaborativo")
-        # Design Guidelines: 4:3 horizontal window.
+        # Guias de Diseno: ventana en formato 4:3
         self.geometry("1024x768")
         self.resizable(False, False)
         self.configure(bg=APP_BACKGROUND)
+
+        # Sesion del usuario actual (necesaria para crear documentos e invitar)
+        self.usuario_id = None
+        self.usuario_nombre = ""
 
         init_fonts()
 
@@ -674,7 +618,7 @@ class App(tk.Tk):
         container.grid_columnconfigure(0, weight=1)
 
         self.frames = {}
-        for FrameClass in (LoginFrame, RegisterFrame, DashboardFrame):
+        for FrameClass in (LoginFrame, RegisterFrame, DashboardFrame, EditorFrame):
             frame = FrameClass(container, self)
             self.frames[FrameClass.__name__] = frame
             frame.grid(row=0, column=0, sticky="nsew")
@@ -684,14 +628,18 @@ class App(tk.Tk):
     def show(self, name):
         self.frames[name].tkraise()
 
-    def on_login_success(self, user_name):
+    def on_login_success(self, user_id, user_name):
+        self.usuario_id = user_id
+        self.usuario_nombre = user_name
         self.frames["DashboardFrame"].greet(user_name)
         self.show("DashboardFrame")
 
+    def abrir_editor(self, documento_id, titulo, contenido=""):
+        self.frames["EditorFrame"].cargar_documento(documento_id, titulo, contenido)
+        self.show("EditorFrame")
 
-# ------------------------------------------------------------------------------
-#  Login screen  (centered single-column card)
-# ------------------------------------------------------------------------------
+
+# Pantalla de inicio de sesion (tarjeta centrada de una sola columna)
 class LoginFrame(tk.Frame):
     def __init__(self, parent, controller):
         super().__init__(parent, bg=APP_BACKGROUND)
@@ -700,26 +648,22 @@ class LoginFrame(tk.Frame):
         card = tk.Frame(self, bg=APP_BACKGROUND)
         card.place(relx=0.5, rely=0.5, anchor="center", width=470)
 
-        # --- Header: welcome title, star logo, subtitle ---
         tk.Label(card, text="¡Bienvenido!", bg=APP_BACKGROUND, fg=TEXT_PRIMARY,
                  font=F_TITLE).pack(pady=(0, 8))
         draw_star_logo(card, size=84, bg=APP_BACKGROUND).pack(pady=4)
         tk.Label(card, text="Inicia sesión", bg=APP_BACKGROUND, fg=TEXT_PRIMARY,
                  font=F_H2).pack(pady=(4, 28))
 
-        # --- Email field ---
         tk.Label(card, text="Ingresa tu correo", bg=APP_BACKGROUND, fg=TEXT_PRIMARY,
                  font=F_LABEL, anchor="w").pack(fill="x", pady=(0, 5))
         box, self.entry_email, _ = make_field(card, "ej. usuario@correo.com")
         box.pack(fill="x", pady=(0, 16))
 
-        # --- Password field with Show/Hide toggle ---
         tk.Label(card, text="Ingresa tu contraseña", bg=APP_BACKGROUND, fg=TEXT_PRIMARY,
                  font=F_LABEL, anchor="w").pack(fill="x", pady=(0, 5))
         box, self.entry_password, _ = make_field(card, "ej. Contraseña1!", is_password=True)
         box.pack(fill="x", pady=(0, 10))
 
-        # --- Forgot password link ---
         forgot = tk.Label(card, text="¿Olvidaste tu contraseña?", bg=APP_BACKGROUND,
                           fg=PRIMARY_ACCENT, font=F_LINK)
         forgot.pack(pady=(0, 18))
@@ -728,12 +672,10 @@ class LoginFrame(tk.Frame):
             "Recuperar contraseña",
             "La recuperación de contraseña aún no está disponible en este prototipo."))
 
-        # --- Submit button ---
         submit = tk.Button(card, text="Iniciar sesión", command=self.handle_login)
         style_primary(submit)
         submit.pack(fill="x", ipady=9, pady=(0, 28))
 
-        # --- Bottom registration panel ---
         panel_border = tk.Frame(card, bg=INPUT_BORDER)
         panel_border.pack(fill="x")
         panel = tk.Frame(panel_border, bg="#F1F5F9")
@@ -764,7 +706,7 @@ class LoginFrame(tk.Frame):
             data = resp.json()
             self.entry_email.reset()
             self.entry_password.reset()
-            self.controller.on_login_success(data.get("name", ""))
+            self.controller.on_login_success(data.get("user_id"), data.get("name", ""))
         elif resp.status_code == 401:
             messagebox.showerror(
                 "Error", "Correo o contraseña incorrectos. Revisa tu información e intenta de nuevo.")
@@ -772,15 +714,12 @@ class LoginFrame(tk.Frame):
             messagebox.showerror("Error", "Ocurrió un problema. Intenta de nuevo.")
 
 
-# ------------------------------------------------------------------------------
-#  Register screen  (split pane: ~40% promo card / ~60% form)
-# ------------------------------------------------------------------------------
+# Pantalla de registro (panel dividido: ~40% promocional / ~60% formulario)
 class RegisterFrame(tk.Frame):
     def __init__(self, parent, controller):
         super().__init__(parent, bg=APP_BACKGROUND)
         self.controller = controller
 
-        # Two-column grid: 40% / 60%
         self.grid_columnconfigure(0, weight=40, uniform="cols")
         self.grid_columnconfigure(1, weight=60, uniform="cols")
         self.grid_rowconfigure(0, weight=1)
@@ -788,7 +727,6 @@ class RegisterFrame(tk.Frame):
         self._build_promo_panel()
         self._build_form_panel()
 
-    # ---- Left promotional panel ----
     def _build_promo_panel(self):
         promo = tk.Frame(self, bg=PROMO_BG)
         promo.grid(row=0, column=0, sticky="nsew", padx=(24, 12), pady=24)
@@ -800,7 +738,6 @@ class RegisterFrame(tk.Frame):
         tk.Label(inner, text="Únete junto a tus\namigos a CoopDoc", bg=PROMO_BG,
                  fg=TEXT_PRIMARY, font=F_PROMO_TITLE, justify="center").pack()
 
-        # Tiny accent divider bar under the title
         tk.Frame(inner, bg=PRIMARY_ACCENT, height=3, width=48).pack(pady=16)
 
         tk.Label(
@@ -811,7 +748,6 @@ class RegisterFrame(tk.Frame):
             wraplength=300,
         ).pack(pady=(0, 30))
 
-        # Footer: "Ya tengo cuenta  Regresar a inicio de sesión"
         footer = tk.Frame(inner, bg=PROMO_BG)
         footer.pack()
         tk.Label(footer, text="Ya tengo cuenta", bg=PROMO_BG, fg=SLATE_TEXT,
@@ -822,7 +758,6 @@ class RegisterFrame(tk.Frame):
         add_hover_underline(link)
         link.bind("<Button-1>", lambda e: self.controller.show("LoginFrame"))
 
-    # ---- Right form panel ----
     def _build_form_panel(self):
         panel = tk.Frame(self, bg=APP_BACKGROUND)
         panel.grid(row=0, column=1, sticky="nsew", padx=(12, 40), pady=24)
@@ -830,7 +765,6 @@ class RegisterFrame(tk.Frame):
         form = tk.Frame(panel, bg=APP_BACKGROUND)
         form.place(relx=0.5, rely=0.5, anchor="center", relwidth=0.92)
 
-        # Title + accent divider
         tk.Label(form, text="¡Bienvenido!", bg=APP_BACKGROUND, fg=TEXT_PRIMARY,
                  font=F_FORM_TITLE).pack()
         tk.Frame(form, bg=PRIMARY_ACCENT, height=3, width=70).pack(pady=(8, 18))
@@ -851,12 +785,10 @@ class RegisterFrame(tk.Frame):
         self.entry_password = field("Ingresa tu contraseña:", "ej. Contraseña1!", is_password=True)
         self.entry_confirm = field("Verifica tu contraseña:", "Repite tu contraseña", is_password=True)
 
-        # Primary CTA
         create = tk.Button(form, text="Crear cuenta", command=self.handle_register)
         style_primary(create)
         create.pack(fill="x", ipady=10, pady=(8, 14))
 
-        # Divider with central "o" badge
         divider = tk.Frame(form, bg=APP_BACKGROUND)
         divider.pack(fill="x", pady=(0, 14))
         tk.Frame(divider, bg=DIVIDER, height=1).pack(side="left", fill="x", expand=True, pady=8)
@@ -864,7 +796,6 @@ class RegisterFrame(tk.Frame):
                  font=F_INPUT).pack(side="left", padx=12)
         tk.Frame(divider, bg=DIVIDER, height=1).pack(side="left", fill="x", expand=True, pady=8)
 
-        # Google sign-up (visual stub for the prototype)
         google = make_outline_button(
             form, "Registrarse con Google",
             lambda: messagebox.showinfo(
@@ -872,7 +803,7 @@ class RegisterFrame(tk.Frame):
         google.pack(fill="x")
 
     def _auto_format_date(self, event):
-        # Auto-insert "/" as the user types dd/mm/aaaa (ignore placeholder & edits).
+        # Inserta "/" automaticamente al teclear dd/mm/aaaa (ignora marcador y ediciones)
         if self.entry_dob.showing_placeholder:
             return
         if event.keysym in ("BackSpace", "Delete", "Left", "Right", "Tab"):
@@ -895,13 +826,13 @@ class RegisterFrame(tk.Frame):
         password = self.entry_password.value()
         confirm = self.entry_confirm.value()
 
-        # 1) Client-side validation (PRD: enforced on the frontend).
+        # Validacion en el cliente (PRD: aplicada en el frontend)
         error = validate_registration(name, dob, email, password, confirm)
         if error:
             messagebox.showerror("Error", error)
             return
 
-        # 2) Backend validation + persistence (PRD: validated on the API).
+        # Validacion y persistencia en el backend (PRD: validada en la API)
         payload = {
             "name": name, "date_of_birth": dob, "email": email,
             "password": password, "confirm_password": confirm,
@@ -920,43 +851,250 @@ class RegisterFrame(tk.Frame):
         elif resp.status_code == 400:
             messagebox.showerror("Error", "Este correo ya está registrado.")
         else:
-            # 422 (schema) or anything unexpected: keep the message friendly.
             messagebox.showerror("Error", "Revisa tu información e intenta de nuevo.")
 
 
-# ------------------------------------------------------------------------------
-#  Dashboard placeholder (shown after a successful login)
-#  The full collaborative editor workspace is the next milestone (PRD §4B–4D).
-# ------------------------------------------------------------------------------
+# Tablero posterior al inicio de sesion: crear o abrir un archivo (PRD: flujo de usuario)
 class DashboardFrame(tk.Frame):
     def __init__(self, parent, controller):
         super().__init__(parent, bg=APP_BACKGROUND)
         self.controller = controller
 
         box = tk.Frame(self, bg=APP_BACKGROUND)
-        box.place(relx=0.5, rely=0.5, anchor="center")
+        box.place(relx=0.5, rely=0.5, anchor="center", width=460)
 
         draw_star_logo(box, size=90, bg=APP_BACKGROUND).pack(pady=(0, 16))
         self.greeting = tk.Label(box, text="¡Hola!", bg=APP_BACKGROUND,
                                  fg=TEXT_PRIMARY, font=F_TITLE)
-        self.greeting.pack(pady=(0, 10))
-        tk.Label(box, text="Tu espacio de trabajo colaborativo estará disponible muy pronto.",
-                 bg=APP_BACKGROUND, fg=SLATE_TEXT, font=F_PROMO_DESC,
-                 wraplength=420, justify="center").pack(pady=(0, 28))
+        self.greeting.pack(pady=(0, 6))
+        tk.Label(box, text="¿Qué te gustaría hacer hoy?", bg=APP_BACKGROUND,
+                 fg=SLATE_TEXT, font=F_PROMO_DESC).pack(pady=(0, 24))
 
-        logout = tk.Button(box, text="Cerrar sesión",
-                           command=lambda: controller.show("LoginFrame"))
-        style_primary(logout)
-        logout.pack(ipady=8, ipadx=24)
+        crear = tk.Button(box, text="Crear un archivo nuevo", command=self._crear_archivo)
+        style_primary(crear)
+        crear.pack(fill="x", ipady=10, pady=(0, 12))
+
+        abrir = make_outline_button(box, "Abrir un archivo existente", self._abrir_archivo)
+        abrir.pack(fill="x", pady=(0, 24))
+
+        logout = tk.Label(box, text="Cerrar sesión", bg=APP_BACKGROUND,
+                          fg=PRIMARY_ACCENT, font=F_LINK)
+        logout.pack()
+        add_hover_underline(logout)
+        logout.bind("<Button-1>", lambda e: self.controller.show("LoginFrame"))
 
     def greet(self, name):
         nice = name.split(" ")[0] if name else ""
         self.greeting.config(text=f"¡Hola, {nice}!" if nice else "¡Hola!")
 
+    def _crear_archivo(self):
+        titulo = simpledialog.askstring("Nuevo archivo",
+                                        "Nombre del documento:", parent=self)
+        if titulo is None:
+            return
+        titulo = titulo.strip()
+        if not titulo:
+            messagebox.showerror("Error", "El nombre del documento no puede estar vacío.")
+            return
 
-# ==============================================================================
-#  MAIN
-# ==============================================================================
+        payload = {"title": titulo, "requester_id": self.controller.usuario_id}
+        try:
+            resp = requests.post(f"{API_BASE}/documents", json=payload, timeout=5)
+        except requests.exceptions.RequestException:
+            messagebox.showerror("Error de conexión",
+                                 "No se pudo conectar con el servidor. Intenta de nuevo.")
+            return
+
+        if resp.status_code == 200:
+            documento_id = resp.json().get("document_id")
+            self.controller.abrir_editor(documento_id, titulo)
+        else:
+            messagebox.showerror("Error", "No se pudo crear el documento. Intenta de nuevo.")
+
+    def _abrir_archivo(self):
+        # "Abrir existente" carga un .txt local en el lienzo (PRD: importar archivos locales)
+        ruta = filedialog.askopenfilename(
+            filetypes=[("Archivos de texto", "*.txt"), ("Todos los archivos", "*.*")])
+        if not ruta:
+            return
+        try:
+            with open(ruta, "r", encoding="utf-8") as archivo:
+                contenido = archivo.read()
+        except OSError:
+            messagebox.showerror("Error", "No se pudo abrir el archivo.")
+            return
+        nombre = ruta.replace("\\", "/").split("/")[-1]
+        self.controller.abrir_editor(None, nombre, contenido)
+
+
+# Espacio de trabajo del editor (integra la funcionalidad de "editor de texto.py")
+class EditorFrame(tk.Frame):
+    def __init__(self, parent, controller):
+        super().__init__(parent, bg=APP_BACKGROUND)
+        self.controller = controller
+        self.documento_id = None
+
+        # Fuentes del lienzo (Open Sans, exclusivas del area de escritura)
+        self.fuente_editor = tkfont.Font(family=EDITOR_FONT[0], size=EDITOR_FONT[1])
+        self.fuente_negrita = tkfont.Font(family=EDITOR_FONT[0], size=EDITOR_FONT[1], weight="bold")
+        self.fuente_cursiva = tkfont.Font(family=EDITOR_FONT[0], size=EDITOR_FONT[1], slant="italic")
+
+        self._construir_barra()
+        self._construir_lienzo()
+        self._configurar_formatos()
+
+    def _construir_barra(self):
+        barra = tk.Frame(self, bg=APP_BACKGROUND)
+        barra.pack(fill="x", padx=16, pady=(16, 8))
+
+        self.etiqueta_titulo = tk.Label(barra, text="Documento", bg=APP_BACKGROUND,
+                                        fg=TEXT_PRIMARY, font=F_H2)
+        self.etiqueta_titulo.pack(side="left")
+
+        acciones = tk.Frame(barra, bg=APP_BACKGROUND)
+        acciones.pack(side="right")
+
+        volver = make_outline_button(acciones, "Volver",
+                                     lambda: self.controller.show("DashboardFrame"))
+        volver.pack(side="right", padx=(8, 0))
+
+        abrir = make_outline_button(acciones, "Abrir .txt", self._abrir_local)
+        abrir.pack(side="right", padx=8)
+
+        invitar = tk.Button(acciones, text="Invitar", command=self._invitar)
+        style_primary(invitar)
+        invitar.pack(side="right", padx=8, ipady=4, ipadx=10)
+
+        guardar = tk.Button(acciones, text="Guardar .txt", command=self._guardar_local)
+        style_primary(guardar)
+        guardar.pack(side="right", padx=8, ipady=4, ipadx=10)
+
+        formato = tk.Frame(self, bg=APP_BACKGROUND)
+        formato.pack(fill="x", padx=16, pady=(0, 8))
+
+        self._boton_formato(formato, "Negrita", F_BTN, self._alternar_negrita).pack(
+            side="left", padx=(0, 8))
+        self._boton_formato(formato, "Cursiva", F_BTN_ITALIC, self._alternar_cursiva).pack(
+            side="left")
+
+    def _boton_formato(self, parent, texto, fuente, comando):
+        # Boton de formato con etiqueta de UI (Rubik), no de lienzo
+        return tk.Button(parent, text=texto, font=fuente, command=comando,
+                         bg=CANVAS_BACKGROUND, fg=TEXT_PRIMARY,
+                         activebackground=OUTLINE_HOVER, activeforeground=HOVER_ACCENT,
+                         relief="flat", bd=1, cursor="hand2", padx=14, pady=4)
+
+    def _construir_lienzo(self):
+        contenedor = tk.Frame(self, bg=INPUT_BORDER)
+        contenedor.pack(fill="both", expand=True, padx=16, pady=(0, 16))
+
+        self.area_texto = tk.Text(
+            contenedor, wrap="word", undo=True, font=self.fuente_editor,
+            bg=CANVAS_BACKGROUND, fg=TEXT_PRIMARY, insertbackground=TEXT_PRIMARY,
+            relief="flat", bd=0, padx=12, pady=12,
+        )
+        self.area_texto.pack(fill="both", expand=True, padx=1, pady=1)
+
+    def _configurar_formatos(self):
+        self.area_texto.tag_configure("negrita", font=self.fuente_negrita)
+        self.area_texto.tag_configure("cursiva", font=self.fuente_cursiva)
+
+    def _alternar_etiqueta(self, nombre):
+        # Activa o desactiva una etiqueta de formato sobre la seleccion actual
+        try:
+            inicio = self.area_texto.index("sel.first")
+            fin = self.area_texto.index("sel.last")
+        except tk.TclError:
+            return
+        if nombre in self.area_texto.tag_names(inicio):
+            self.area_texto.tag_remove(nombre, inicio, fin)
+        else:
+            self.area_texto.tag_add(nombre, inicio, fin)
+
+    def _alternar_negrita(self):
+        self._alternar_etiqueta("negrita")
+
+    def _alternar_cursiva(self):
+        self._alternar_etiqueta("cursiva")
+
+    def cargar_documento(self, documento_id, titulo, contenido=""):
+        # Prepara el lienzo para un documento (remoto si hay id, o local importado)
+        self.documento_id = documento_id
+        self.etiqueta_titulo.config(text=titulo or "Documento")
+        self.area_texto.tag_remove("negrita", "1.0", "end")
+        self.area_texto.tag_remove("cursiva", "1.0", "end")
+        self.area_texto.delete("1.0", "end")
+        if contenido:
+            self.area_texto.insert("1.0", contenido)
+        self.area_texto.edit_reset()
+        self.area_texto.focus_set()
+
+    def _guardar_local(self):
+        ruta = filedialog.asksaveasfilename(
+            defaultextension=".txt",
+            filetypes=[("Archivos de texto", "*.txt"), ("Todos los archivos", "*.*")])
+        if not ruta:
+            return
+        try:
+            with open(ruta, "w", encoding="utf-8") as archivo:
+                archivo.write(self.area_texto.get("1.0", "end-1c"))
+        except OSError:
+            messagebox.showerror("Error", "No se pudo guardar el archivo.")
+            return
+        messagebox.showinfo("Guardar", "El documento se guardó correctamente.")
+
+    def _abrir_local(self):
+        ruta = filedialog.askopenfilename(
+            filetypes=[("Archivos de texto", "*.txt"), ("Todos los archivos", "*.*")])
+        if not ruta:
+            return
+        try:
+            with open(ruta, "r", encoding="utf-8") as archivo:
+                contenido = archivo.read()
+        except OSError:
+            messagebox.showerror("Error", "No se pudo abrir el archivo.")
+            return
+        self.area_texto.tag_remove("negrita", "1.0", "end")
+        self.area_texto.tag_remove("cursiva", "1.0", "end")
+        self.area_texto.delete("1.0", "end")
+        self.area_texto.insert("1.0", contenido)
+        self.area_texto.edit_reset()
+
+    def _invitar(self):
+        # Invita colaboradores usando el endpoint REST existente (PRD: gestion de acceso)
+        if self.documento_id is None:
+            messagebox.showinfo(
+                "Invitar",
+                "Crea un archivo nuevo desde el panel para poder invitar colaboradores.")
+            return
+
+        correo = simpledialog.askstring("Invitar colaborador",
+                                        "Correo de la persona a invitar:", parent=self)
+        if not correo:
+            return
+
+        payload = {
+            "document_id": self.documento_id,
+            "requester_id": self.controller.usuario_id,
+            "invitee_email": correo.strip(),
+        }
+        try:
+            resp = requests.post(f"{API_BASE}/invite", json=payload, timeout=5)
+        except requests.exceptions.RequestException:
+            messagebox.showerror("Error de conexión",
+                                 "No se pudo conectar con el servidor. Intenta de nuevo.")
+            return
+
+        if resp.status_code == 200:
+            messagebox.showinfo("Invitar", f"Se invitó a {correo} correctamente.")
+        elif resp.status_code == 404:
+            messagebox.showerror("Error", "El correo no pertenece a ningún usuario registrado.")
+        elif resp.status_code == 403:
+            messagebox.showerror("Error", "No tienes acceso a este documento.")
+        else:
+            messagebox.showerror("Error", "Ocurrió un problema al invitar. Intenta de nuevo.")
+
+
 if __name__ == "__main__":
     start_backend()
     if not wait_until_ready():
