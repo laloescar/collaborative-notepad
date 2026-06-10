@@ -1,0 +1,36 @@
+CoopDoc Collaborative Text Editor - Client-Server Architecture and Collaboration Feature Description
+
+Module: Real-Time Collaborative Editing System
+Infrastructure Constraint: Decentralized / Local-host driven. The system strictly avoids centralized cloud hosting.
+Networking Strategy: Utilizes ngrok tunneling to expose local environments, enabling peer-to-peer concurrency and real-time state synchronization across distributed clients.
+
+Entity Access Roles
+The system operates on a strict, dual-tier permission model based on file origin.
+	- Role 1: Owner
+		Definition: The registered user who instantiates/creates the text file.
+		Permissions: Read, Write, Invite Collaborators, View Collaborator List, Revoke Access.
+	- Role 2: Collaborator
+		Definition: A registered user who has been explicitly granted access by the Owner.
+		Permissions: Read, Write, View Collaborator List. (Cannot invite or remove others).
+
+Core Workflows & State Transitions
+1. Access Provisioning (The Invitation Workflow)
+	- Trigger: Owner interacts with the "Invitar" (Invite) UI component.
+	- Action: System prompts for the target user's email address.
+	- State Change: The target user's email is appended to the file's access control list.
+	- Result: The file instantly becomes visible and accessible in the invited user's dashboard of available files. Read/Write privileges are immediately active.
+
+2. Concurrent Execution (The Real-Time Editing Workflow)
+	- Trigger: Any authorized user (Owner or Collaborator) opens an accessible file.
+	- Action: User modifies the text document.
+	- State Change: Changes are broadcasted via the ngrok tunnel to all currently connected clients.
+	- Result: The UI updates dynamically for all active viewers. Every authorized user observes the exact same document state in real-time.
+
+3. Access Visibility (The Collaborator Audit Workflow)
+	- Trigger: Any authorized user clicks the "Collaborators" UI component within an active file session.
+	- Result: The system renders a UI list displaying the names of all registered users who currently hold access privileges for that specific file.
+
+4. Access Revocation (The Removal Workflow)
+	- Trigger: The Owner views the "Collaborators" list and triggers the removal action on a specific Collaborator.
+	- State Change: The targeted Collaborator is removed from the file's access control list.
+	- Result: The revoked user immediately loses all Read/Write privileges. The file disappears from their local dashboard, and if they are currently active in the document, their session is aggressively terminated.
