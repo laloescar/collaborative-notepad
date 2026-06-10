@@ -1,0 +1,87 @@
+CoopDoc Collaborative Text Editor - Product Requirements Document
+
+1. Meta Information
+	Product name: CoopDoc
+	Platform: Desktop application (Windows and MacOS)
+	Core paradigm: Multi-user text editor with pessimistic locking (turn-based editing via "read" and "edit" modes). No real-time simultaneous character synchronization.
+
+2. Architecture and deployment
+	Model: Client-server hub-and-spoke.
+	Codebase: Monolithic. Single executable/script dynamically assigns role at runtime based on user selection.
+	Node roles:
+		Host node (hub):
+			- Spawns background daemon thread for ASGI server (uvicorn).
+			- Launches desktop GUI on main thread (connects to localhost).
+			- Hosts sqlite database locally.
+			- Exposed to internet via tunneling using ngrok.
+		Client node (spoke):
+			- Bypasses server initialization.
+			- Launches desktop GUI only.
+			- Connects to host node via external ngrok url.
+3. Tech stack
+	Frontend: Python / tkinter.
+	Backend: Python / fastapi / uvicorn.
+	Database: Sqlite (synchronous, thread-safe configuration).
+	Version control: Git / Github.
+
+4. System states & concurrency
+	Concurrency model: Pessimistic locking with time-based cooldown.
+	In memory state: Dictionaries tracking active document locks and user cooldowns, protected by threading mutex.
+	Client states:
+		- State: read mode: Default view. Canvas is read-only. Client renders current version and listens for server broadcasts.
+		- State: edit mode: Exclusive lock granted. Canvas unlocked for input.
+	Document state:
+		- Current version: The latest committed string/file state stored in sqlite.
+
+5. Communication protocols
+	HTTP/Rest (client -> server):
+		Usage: Authentication, file management, invites, fetching versions, requesting edit locks, pushing new document revisions.
+	Websockets (server -> client):
+		Usage: Unidirectional broadcast push channel.
+		Triggers: Document content change (new current version), lock status change (who is editing), access revocation (kick user).
+	GUI thread bridging:
+		Constraint: Tkinter runs on main thread. Websockets run on background thread.
+		Mechanism: Thread-safe queue passes messages from websocket to main GUI thread via periodic polling.
+6. Core workflows
+	Authentication: Log in via HTTP Post or register new account.
+	Dashboard: View accessible files (owned or invited). Create new or open existing.
+	Collaboration cycle:
+		1. Initialize: All clients open doc in state: read mode.
+		2. Request lock: Client A requests state: edit mode via HTTP.
+		3. Lock granted: Server grants lock, broadcasts lock status via websocket to disable other clients.
+		4. Edit locally: Client A writes/formats text (bold, italic, line breaks).
+		5. Submit: Client A clicks “Guardar Cambios”. HTTP payload sent to server.
+		6. Process: Server increments version, updates current version in db, releases lock, triggers cooldown.
+		7. Broadcast: Server broadcasts new current version via websocket.
+		8. Sync: All clients automatically update local canvas.
+	Local IO:
+		Save workspace to local .txt/.rtf or load local .txt to workspace.
+	Access management:
+		Invite/revoke permissions are strictly restricted to the "owner" (original creator in db).
+
+7. Strict data validation constraints
+Constraint enforcement: Must be enforced on frontend UI and backend API.
+	Name:
+		Allow:
+			- Alphabetical letters only.
+		Disallow:
+			- Numbers.
+			- Special characters.
+	Email:
+		Require:
+			- Exactly one @ symbol.
+		Disallow:
+			- Spaces.
+			- Backslashes \.
+			- Accented or non-latin characters.
+			- Consecutive dots ...
+			- Leading or trailing dots.
+	Password:
+		Require:
+			- Minimum length of 8 characters.
+			- At least one uppercase letter.
+			- At least one lowercase letter.
+			- At least one number.
+			- At least one special character.
+	UI requirement: "Confirm password" field must match strictly before HTTP submission.
+	Critical security override: Passwords must be saved in plaintext exactly as inputted by the user. Do not implement hashing or encryption.
