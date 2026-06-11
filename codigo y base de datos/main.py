@@ -2140,7 +2140,7 @@ class StartupDialog(tk.Tk):
 
         # Centrar ventana
         self.update_idletasks()
-        w, h = 400, 360
+        w, h = 1024, 768
         x = (self.winfo_screenwidth()  - w) // 2
         y = (self.winfo_screenheight() - h) // 2
         self.geometry(f"{w}x{h}+{x}+{y}")
